@@ -6,3 +6,8 @@
 /build
 /captures
 .externalNativeBuild
+
+# Nix
+result
+result-*
+.direnv
