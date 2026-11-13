@@ -59,11 +59,18 @@ class GpgAgentService : AgentService() {
 	private fun signingKey(api: GpgApi, args: GpgArguments, configured: Long, port: Int, stat: StreamStatus): Long {
 		val selector = args.options["local-user"] ?: args.options["default-user"] ?: args.options["default-key"]
 		val selected = if (selector == null) configured else keyId(selector) ?: run {
+			// The provider's sign-key dialog dereferences a null email when the
+			// selector is a bare address. Resolve through the key-id query that
+			// recipient selection already uses.
 			val result = execute(api, Intent().apply {
-				action = ACTION_GET_SIGN_KEY_ID
-				putExtra(EXTRA_USER_ID, selector)
+				action = ACTION_GET_KEY_IDS
+				putExtra(EXTRA_USER_IDS, arrayOf(selector))
 			}, port, stat)
-			result.getLongExtra(RESULT_SIGN_KEY_ID, 0)
+			val resolved = result.getLongArrayExtra(RESULT_KEY_IDS)
+			require(resolved != null && resolved.size == 1) {
+				"Expected exactly one signing key for $selector, found ${resolved?.size ?: 0}"
+			}
+			resolved[0]
 		}
 		require(selected != 0L && selected != -1L) { "No signing key selected" }
 		return selected

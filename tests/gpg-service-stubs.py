@@ -165,10 +165,23 @@ fun gpgServiceTests() {
   }
   check(invoke("--backup", "0000000000000001").first == 0)
   GpgApi.result = { request, _, _ ->
-    check(request.action == ACTION_GET_SIGN_KEY_ID)
+    check(request.action == ACTION_GET_KEY_IDS)
+    val selectors = request.extras[EXTRA_USER_IDS] as Array<*>
+    check(selectors.size == 1 && selectors[0] == "missing@example.com")
     Intent().putExtra("result_code", 0).putExtra(RESULT_ERROR, OpenPgpError("Selector rejected"))
   }
   check(invoke("--detach-sign", "--local-user", "missing@example.com").first == 1)
+  GpgApi.result = { request, _, _ ->
+    when (request.action) {
+      ACTION_GET_KEY_IDS -> Intent().putExtra("result_code", 1).putExtra(RESULT_KEY_IDS, longArrayOf(7L))
+      ACTION_DETACHED_SIGN -> {
+        check(request.getLongExtra(EXTRA_SIGN_KEY_ID, 0L) == 7L)
+        Intent().putExtra("result_code", 1).putExtra(RESULT_DETACHED_SIGNATURE, byteArrayOf(9))
+      }
+      else -> throw IllegalStateException("unexpected action ${request.action}")
+    }
+  }
+  check(invoke("--detach-sign", "--local-user", "user@example.com").first == 0)
   GpgApi.result = { request, input, output ->
     if (request.action == ACTION_GET_KEY_IDS) {
       Intent().putExtra("result_code", 1).putExtra(RESULT_KEY_IDS, longArrayOf(2L))
