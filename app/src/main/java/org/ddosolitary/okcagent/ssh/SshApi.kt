@@ -36,7 +36,7 @@ class SshApi(
 
 	override fun close() {
 		conn?.let {
-			if (it.isConnected) it.disconnect()
+			try { it.disconnect() } catch (_: IllegalArgumentException) { }
 		}
 	}
 }

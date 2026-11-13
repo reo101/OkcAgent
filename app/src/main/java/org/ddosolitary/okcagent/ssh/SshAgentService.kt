@@ -3,7 +3,6 @@ package org.ddosolitary.okcagent.ssh
 import android.content.Intent
 import android.util.Base64
 import android.util.Log
-import com.bugsnag.android.Bugsnag
 import org.ddosolitary.okcagent.AgentService
 import org.ddosolitary.okcagent.R
 import org.ddosolitary.okcagent.showError
@@ -15,6 +14,7 @@ import org.openintents.ssh.authentication.response.SigningResponse
 import org.openintents.ssh.authentication.response.SshPublicKeyResponse
 import java.net.Socket
 import java.util.concurrent.Semaphore
+import java.util.concurrent.TimeUnit
 
 class SshAgentService : AgentService() {
 	companion object {
@@ -27,9 +27,10 @@ class SshAgentService : AgentService() {
 
 	override fun runAgent(port: Int, intent: Intent) {
 		var socket: Socket? = null
+		var input: ClientInputStream? = null
 		try {
 			socket = Socket("127.0.0.1", port)
-			val input = socket.getInputStream()
+			input = ClientInputStream(socket)
 			val output = socket.getOutputStream()
 			val keys = SshKeyInfo.load(this)
 			val lock = Semaphore(0)
@@ -40,8 +41,7 @@ class SshAgentService : AgentService() {
 				lock.release()
 			}.use { api ->
 				api.connect()
-				lock.acquire()
-				check(connRes)
+				check(lock.tryAcquire(15, TimeUnit.SECONDS) && connRes) { "Cannot connect to the SSH provider" }
 				val executeApi = { reqIntent: Intent -> api.executeApi(reqIntent) }
 				val publicKeys = mutableListOf<SshPublicKeyInfo>()
 				for (key in keys) {
@@ -87,7 +87,6 @@ class SshAgentService : AgentService() {
 				}
 			}
 		} catch (e: Exception) {
-			Bugsnag.notify(e)
 			Log.e(LOG_TAG, Log.getStackTraceString(e))
 			try {
 				socket?.setSoLinger(true, 0)
@@ -96,6 +95,7 @@ class SshAgentService : AgentService() {
 				showError(this, e.toString())
 			}
 		} finally {
+			try { input?.close() } catch (_: Exception) { }
 			try {
 				socket?.close()
 			} catch (e: Exception) {

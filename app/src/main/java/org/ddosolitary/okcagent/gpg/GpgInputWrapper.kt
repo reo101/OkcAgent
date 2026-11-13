@@ -3,146 +3,89 @@ package org.ddosolitary.okcagent.gpg
 import org.ddosolitary.okcagent.AgentService
 import org.ddosolitary.okcagent.readExact
 import org.ddosolitary.okcagent.writeString
-import java.io.*
+import java.io.EOFException
+import java.io.File
+import java.io.InputStream
+import java.io.RandomAccessFile
 import java.net.Socket
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import java.util.concurrent.locks.ReentrantLock
 
-class GpgInputWrapper(
-	private val port: Int,
-	private val path: String,
-	private val stat: AgentService.StreamStatus?
-) : InputStream() {
-	private val tmpFileDelegate = lazy {
-		File.createTempFile("gpg-input-", null).apply { deleteOnExit() }
-	}
-	private val tmpFile by tmpFileDelegate
-	private val streamDelegate = lazy {
-		val socket = Socket("127.0.0.1", port)
-		socket.getOutputStream().let {
-			it.write(1)
-			writeString(it, path)
-			it.flush()
-		}
-		socket.getInputStream()
-	}
-	private val stream by streamDelegate
-	private var position: Long = 0
-	private var buffer: ByteArray? = null
+class GpgInputWrapper(private val port: Int, private val path: String,
+	private val stat: AgentService.StreamStatus?) : InputStream() {
+	private var socket: Socket? = null
+	private var stream: InputStream? = null
+	private var buffer = ByteArray(0)
 	private var bufferPosition = 0
-	private var eofReceived = false
-	private var eofExceptionThrown = false
+	private var eof = false
+	private var failure: EOFException? = null
+	private var temporary: File? = null
+	private var replay: RandomAccessFile? = null
 
 	override fun read(): Int {
-		val buf = ByteArray(1)
-		return if (read(buf, 0, 1) == -1) -1 else buf[0].toInt()
+		val byte = ByteArray(1)
+		return if (read(byte) == -1) -1 else byte[0].toInt() and 0xff
 	}
 
-	override fun read(b: ByteArray): Int {
-		return read(b, 0, b.size)
-	}
-
-	@Suppress("UsePropertyAccessSyntax")
 	override fun read(b: ByteArray, off: Int, len: Int): Int {
-		if (eofReceived) return -1
-		if (eofExceptionThrown) throw EOFException()
-		if (buffer == null) {
-			val lenBuf = readExact(stream, Short.SIZE_BYTES)
-			if (lenBuf == null) {
-				eofExceptionThrown = true
-				stat?.exception = EOFException()
-				throw EOFException()
-			}
-			val recvLen = ByteBuffer.wrap(lenBuf).apply {
-				order(ByteOrder.BIG_ENDIAN)
-			}.getShort().toUShort().toInt()
-			if (recvLen == 0) {
-				eofReceived = true
-				return -1
-			}
-			buffer = readExact(stream, recvLen)
-			bufferPosition = 0
+		require(off >= 0 && len >= 0 && off <= b.size - len)
+		if (len == 0) return 0
+		failure?.let { throw it }
+		if (eof) return -1
+		if (stream == null) {
+			socket = Socket("127.0.0.1", port)
+			socket!!.getOutputStream().let { it.write(1); writeString(it, path) }
+			stream = socket!!.getInputStream()
 		}
-		buffer!!.let {
-			val copyLen = minOf(len, it.size - bufferPosition)
-			it.copyInto(b, off, bufferPosition, bufferPosition + copyLen)
-			bufferPosition += copyLen
-			position += copyLen
-			if (bufferPosition == it.size) {
-				buffer = null
+		try {
+			if (bufferPosition == buffer.size) {
+				val header = readExact(stream!!, 2) ?: throw EOFException("Missing input frame")
+				val size = (header[0].toInt() and 0xff) * 256 + (header[1].toInt() and 0xff)
+				if (size == 0) { eof = true; return -1 }
+				buffer = readExact(stream!!, size) ?: throw EOFException("Truncated input frame")
+				bufferPosition = 0
 			}
-			return copyLen
-		}
-	}
-
-	override fun close() {
-		if (streamDelegate.isInitialized()) {
-			stream.close()
-		}
-		if (tmpFileDelegate.isInitialized()) {
-			tmpFile.delete()
+			val count = minOf(len, buffer.size - bufferPosition)
+			buffer.copyInto(b, off, bufferPosition, bufferPosition + count)
+			bufferPosition += count
+			return count
+		} catch (error: EOFException) {
+			failure = error
+			stat?.exception = error
+			throw error
 		}
 	}
 
 	fun getAutoReopenStream(): InputStream {
+		check(replay == null) { "Input replay stream already exists" }
+		temporary = File.createTempFile("gpg-input-", null)
+		val cache = RandomAccessFile(temporary!!, "rw")
+		replay = cache
 		return object : InputStream() {
-			private var tmpInput: FileInputStream? = null
-			private var tmpOutput: FileOutputStream? = tmpFile.outputStream()
-			private var position: Long = 0
-			private var reopened = false
-			private val lock = ReentrantLock()
-
+			private var position = 0L
 			override fun read(): Int {
-				val buf = ByteArray(1)
-				return if (read(buf, 0, 1) == -1) -1 else buf[0].toInt()
+				val byte = ByteArray(1)
+				return if (read(byte) == -1) -1 else byte[0].toInt() and 0xff
 			}
-
-			override fun read(b: ByteArray): Int {
-				return read(b, 0, b.size)
-			}
-
-			override fun read(b: ByteArray, off: Int, len: Int): Int {
-				if (!lock.isHeldByCurrentThread) {
-					lock.lock()
-				}
-				if (reopened && tmpInput == null) tmpInput = tmpFile.inputStream()
-				return if (position < tmpInput?.channel?.size() ?: 0) {
-					check(reopened)
-					val ret = tmpInput!!.read(b, off, len)
-					check(ret != -1)
-					position += ret
-					ret
+			@Synchronized override fun read(b: ByteArray, off: Int, len: Int): Int {
+				require(off >= 0 && len >= 0 && off <= b.size - len)
+				if (len == 0) return 0
+				cache.seek(position)
+				val count = if (position < cache.length()) {
+					cache.read(b, off, minOf(len.toLong(), cache.length() - position).toInt())
 				} else {
-					check(position == this@GpgInputWrapper.position)
-					val ret = this@GpgInputWrapper.read(b, off, len)
-					if (ret != -1) {
-						if (!reopened) {
-							tmpOutput!!.let {
-								check(position == it.channel.position())
-								it.write(b, off, ret)
-							}
-						}
-						position += ret
+					this@GpgInputWrapper.read(b, off, len).also {
+						if (it != -1) cache.write(b, off, it)
 					}
-					ret
 				}
+				if (count != -1) position += count
+				return count
 			}
+			@Synchronized override fun close() { position = 0 }
+		}
+	}
 
-			override fun close() {
-				if (lock.isHeldByCurrentThread) {
-					position = 0
-					if (!reopened) {
-						tmpOutput!!.close()
-						tmpOutput = null
-						reopened = true
-					} else {
-						tmpInput?.close()
-						tmpInput = null
-					}
-					lock.unlock()
-				}
-			}
+	override fun close() {
+		try { socket?.close() } finally {
+			try { replay?.close() } finally { temporary?.delete() }
 		}
 	}
 }

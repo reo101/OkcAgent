@@ -26,6 +26,7 @@ class IntentRunnerActivity : AppCompatActivity() {
 	override fun onCreate(savedInstanceState: Bundle?) {
 		super.onCreate(savedInstanceState)
 		setContentView(R.layout.activity_intent_runner)
+		if (savedInstanceState != null && vm.reqIntent != null) return
 		when (intent.action) {
 			ACTION_RUN_PENDING_INTENT -> {
 				vm.reqIntent = intent
@@ -40,7 +41,7 @@ class IntentRunnerActivity : AppCompatActivity() {
 
 	override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
 		super.onActivityResult(requestCode, resultCode, data)
-		val res = if (resultCode == Activity.RESULT_OK) data!! else null
+		val res = if (resultCode == Activity.RESULT_OK) data else null
 		val cbIntent = vm.reqIntent!!.getParcelableExtra<Intent>(EXTRA_CALLBACK_INTENT)!!
 		startService(cbIntent.apply { putExtra(EXTRA_RESULT_INTENT, res) })
 		vm.reqIntent = null

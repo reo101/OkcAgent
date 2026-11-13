@@ -1,9 +1,12 @@
 {
-  description = "OkcAgent Kotlin Android development environment";
+  description = "OkcAgent Android build tools and host protocol tests";
 
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
-    flake-parts.url = "github:hercules-ci/flake-parts";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-parts = {
+      url = "github:hercules-ci/flake-parts";
+      inputs.nixpkgs-lib.follows = "nixpkgs";
+    };
     systems.url = "github:nix-systems/default";
   };
 
@@ -13,28 +16,51 @@
       systems = import inputs.systems;
 
       perSystem =
-        { pkgs, ... }:
+        { pkgs, system, ... }:
+        let
+          sdk =
+            (pkgs.androidenv.composeAndroidPackages {
+              platformVersions = [ "33" ];
+              buildToolsVersions = [ "31.0.0" ];
+              includeEmulator = false;
+              includeSystemImages = false;
+              includeNDK = false;
+            }).androidsdk;
+        in
         {
+          _module.args.pkgs = import inputs.nixpkgs {
+            inherit system;
+            config = {
+              allowUnfree = true;
+              android_sdk.accept_license = true;
+            };
+          };
+
+          checks.agent-runtime =
+            pkgs.runCommand "check-okcagent-runtime"
+              {
+                nativeBuildInputs = [
+                  pkgs.python3
+                  pkgs.jdk11
+                  pkgs.kotlin
+                ];
+              }
+              ''
+                export HOME="$TMPDIR"
+                python3 ${./.}/tests/test-agent-runtime.py
+                touch "$out"
+              '';
+
           devShells.default = pkgs.mkShell {
-            buildInputs = [
-              # JDK for Kotlin/Android
-              pkgs.jdk17
-
-              # Build tools
-              pkgs.gradle
-
-              # Kotlin compiler
+            packages = [
+              pkgs.jdk11
+              pkgs.python3
               pkgs.kotlin
-
-              # Android SDK and NDK
-              pkgs.android-tools
+              pkgs.unzip
             ];
-
-            shellHook = ''
-              echo "Kotlin Android development environment loaded"
-              echo "JDK version: $(java -version 2>&1 | head -n 1)"
-              echo "Gradle version: $(gradle --version | head -n 1)"
-            '';
+            JAVA_HOME = pkgs.jdk11.home;
+            ANDROID_SDK_ROOT = "${sdk}/libexec/android-sdk";
+            ANDROID_HOME = "${sdk}/libexec/android-sdk";
           };
         };
     };

@@ -1,19 +1,15 @@
-on: push
+name: Build and test
+on: [push, pull_request]
 jobs:
-  build:
+  android:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@master
-      - run: |
-          sudo $ANDROID_SDK_ROOT/tools/bin/sdkmanager --sdk_root=$ANDROID_SDK_ROOT "build-tools;31.0.0" "platforms;android-30" "ndk;21.0.6113669"
-          ./gradlew assembledebug
-      - if: github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/')
-        run: |
-          git fetch --unshallow --tags
-          mkdir -p ~/.ssh
-          echo ${{ secrets.DEPLOYKEY }} | base64 -d > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan web.sourceforge.net > ~/.ssh/known_hosts
-          scp \
-              app/build/outputs/apk/debug/app-debug.apk \
-              ddosolitary@web.sourceforge.net:/home/project-web/ddosolitary-builds/htdocs/OkcAgent/OkcAgent-$(git describe --tags).apk
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - run: nix flake check -L
+      - run: nix develop -c ./gradlew --no-daemon assembleDebug assembleRelease
+      - run: nix develop -c python3 tests/verify-apk.py app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/release/app-release-unsigned.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OkcAgent-debug
+          path: app/build/outputs/apk/debug/app-debug.apk

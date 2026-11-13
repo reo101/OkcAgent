@@ -8,6 +8,7 @@ import java.nio.ByteOrder
 
 class GpgOutputWrapper(private val port: Int, private val path: String) : OutputStream() {
 	private var stream: OutputStream? = null
+	private var socket: Socket? = null
 
 	override fun write(b: Int) {
 		write(byteArrayOf(b.toByte()))
@@ -18,8 +19,11 @@ class GpgOutputWrapper(private val port: Int, private val path: String) : Output
 	}
 
 	override fun write(b: ByteArray, off: Int, len: Int) {
+		require(off >= 0 && len >= 0 && off <= b.size - len)
+		if (len == 0) return
 		if (stream == null) {
-			stream = Socket("127.0.0.1", port).apply { setSoLinger(true, 1) }.getOutputStream().also {
+			socket = Socket("127.0.0.1", port)
+			stream = socket!!.getOutputStream().also {
 				it.write(2)
 				writeString(it, path)
 			}
@@ -43,8 +47,9 @@ class GpgOutputWrapper(private val port: Int, private val path: String) : Output
 	}
 
 	override fun close() {
-		stream?.use {
-			it.write(byteArrayOf(0, 0))
+		try { stream?.write(byteArrayOf(0, 0)) } finally {
+			socket?.close()
+			socket = null
 			stream = null
 		}
 	}

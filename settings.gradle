@@ -1,1 +1,5 @@
 include ':app'
+include ':openpgp-api'
+project(':openpgp-api').projectDir = new File('libraries/openpgp-api')
+include ':sshauthentication-api'
+project(':sshauthentication-api').projectDir = new File('libraries/sshauthentication-api')

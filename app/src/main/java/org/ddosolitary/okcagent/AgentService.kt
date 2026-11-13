@@ -7,7 +7,14 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import java.io.Closeable
+import java.net.Socket
+import java.net.SocketTimeoutException
 import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.thread
 
 abstract class AgentService : Service() {
@@ -22,26 +29,50 @@ abstract class AgentService : Service() {
 		private const val EXTRA_RESULT_CODE = "result_code"
 		private const val EXTRA_PENDING_INTENT = "intent"
 
-		val lockObj = Object()
+		val lockObj = ReentrantLock()
+		private val authorizationLock = ReentrantLock()
 	}
 
 	private class NullableIntentHolder(val intent: Intent?)
 	private class ThreadContext(val thread: Thread, val queue: ArrayBlockingQueue<NullableIntentHolder>)
-	class StreamStatus(var exception: Exception?)
+	class StreamStatus(@Volatile var exception: Exception?)
 
-	private val threadMap = mutableMapOf<Int, ThreadContext>()
-	private var exited = false
+	private val threadMap = ConcurrentHashMap<Int, ThreadContext>()
+	@Volatile private var exited = false
 
 	private fun checkServiceExit() {
 		if (threadMap.isEmpty()) stopSelf()
 	}
 
 	protected fun checkThreadExit(port: Int) {
-		if (!Thread.interrupted()) {
-			Handler(mainLooper).post {
-				threadMap.remove(port)
-				if (!exited) checkServiceExit()
+		Handler(mainLooper).post {
+			threadMap.remove(port)
+			(getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(port)
+			if (!exited) checkServiceExit()
+		}
+	}
+
+	// GPG's control connection is output-only. Its input EOF is cancellation,
+	// not a protocol message. Do not use this monitor on the SSH data socket.
+	protected fun watchClientDisconnect(socket: Socket): Closeable {
+		val requestThread = Thread.currentThread()
+		val active = AtomicBoolean(true)
+		socket.soTimeout = 500
+		val monitor = thread(isDaemon = true, name = "gpg-client-disconnect") {
+			try {
+				while (active.get()) {
+					try {
+						if (socket.getInputStream().read() == -1) break
+					} catch (_: SocketTimeoutException) { }
+				}
+			} catch (_: Exception) {
+			} finally {
+				if (active.get()) requestThread.interrupt()
 			}
+		}
+		return Closeable {
+			active.set(false)
+			if (!Thread.currentThread().isInterrupted) monitor.join(1000)
 		}
 	}
 
@@ -52,12 +83,18 @@ abstract class AgentService : Service() {
 	protected fun callApi(executeApi: (Intent) -> Intent?, req: Intent, port: Int, stat: StreamStatus?): Intent? {
 		var reqIntent = req
 		while (true) {
-			synchronized(lockObj) {
-				val resIntent = executeApi(reqIntent)!!
-				stat?.exception?.let { throw it }
-				when (resIntent.getIntExtra(EXTRA_RESULT_CODE, RESULT_CODE_ERROR)) {
+			lockObj.lockInterruptibly()
+			val resIntent = try {
+				executeApi(reqIntent) ?: throw IllegalStateException("Provider is not connected")
+			} finally {
+				lockObj.unlock()
+			}
+			stat?.exception?.let { throw it }
+			when (resIntent.getIntExtra(EXTRA_RESULT_CODE, RESULT_CODE_ERROR)) {
 					RESULT_CODE_SUCCESS -> return resIntent
 					RESULT_CODE_USER_INTERACTION_REQUIRED -> {
+						authorizationLock.lockInterruptibly()
+						try {
 						val runnerIntent = Intent(this, IntentRunnerActivity::class.java).apply {
 							action = IntentRunnerActivity.ACTION_RUN_PENDING_INTENT
 							flags = Intent.FLAG_ACTIVITY_NEW_TASK
@@ -101,14 +138,20 @@ abstract class AgentService : Service() {
 						} else {
 							startActivity(runnerIntent)
 						}
-						reqIntent = threadMap[port]!!.queue.take().intent ?: return null
+						try {
+							val response = threadMap[port]?.queue?.poll(120, TimeUnit.SECONDS)
+								?: throw IllegalStateException("Authorization timed out")
+							reqIntent = response.intent ?: return null
+						} finally {
+							(getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(port)
+						}
+						} finally { authorizationLock.unlock() }
 					}
 					RESULT_CODE_ERROR -> {
-						showError(this, getErrorMessage(resIntent) ?: getString(R.string.error_api))
-						return null
+						throw IllegalStateException(getErrorMessage(resIntent) ?: getString(R.string.error_api))
 					}
+					else -> throw IllegalStateException("Provider returned an invalid result code")
 				}
-			}
 		}
 	}
 
@@ -150,14 +193,14 @@ abstract class AgentService : Service() {
 		val port = intent.getIntExtra(EXTRA_PROXY_PORT, -1)
 		when (intent.action) {
 			ACTION_RUN_AGENT -> {
+				if (port !in 1..65535) { checkServiceExit(); return START_NOT_STICKY }
 				if (!threadMap.containsKey(port)) {
-					threadMap[port] = ThreadContext(
-						thread { runAgent(port, intent) },
-						ArrayBlockingQueue(1)
-					)
+					val worker = thread(start = false) { runAgent(port, intent) }
+					threadMap[port] = ThreadContext(worker, ArrayBlockingQueue(1))
+					worker.start()
 				} else checkServiceExit()
 			}
-			ACTION_RESULT_CALLBACK -> threadMap[port]?.queue?.put(
+			ACTION_RESULT_CALLBACK -> threadMap[port]?.queue?.offer(
 				NullableIntentHolder(intent.getParcelableExtra(IntentRunnerActivity.EXTRA_RESULT_INTENT))
 			) ?: checkServiceExit()
 			ACTION_TERMINATE_SERVICE -> stopSelf()
@@ -167,11 +210,8 @@ abstract class AgentService : Service() {
 
 	override fun onDestroy() {
 		exited = true
-		startActivity(Intent(this, IntentRunnerActivity::class.java).apply {
-			flags = Intent.FLAG_ACTIVITY_NEW_TASK
-			action = IntentRunnerActivity.ACTION_FINISH
-		})
-		for ((_, ctx) in threadMap) {
+		for ((port, ctx) in threadMap) {
+			(getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(port)
 			ctx.thread.interrupt()
 		}
 		for ((_, ctx) in threadMap) {

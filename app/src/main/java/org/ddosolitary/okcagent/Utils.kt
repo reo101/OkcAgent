@@ -48,7 +48,8 @@ fun showError(context: Context, resId: Int) = showError(context, context.getStri
 
 fun writeString(output: OutputStream, str: String) {
 	val strBuf = str.toByteArray(Charsets.UTF_8)
-	val len = minOf(strBuf.size, UShort.MAX_VALUE.toInt()).toUShort()
+	require(strBuf.size <= UShort.MAX_VALUE.toInt()) { "Control string exceeds protocol frame size" }
+	val len = strBuf.size.toUShort()
 	val lenBuf = ByteBuffer.allocate(Short.SIZE_BYTES).apply {
 		order(ByteOrder.BIG_ENDIAN)
 		putShort(len.toShort())

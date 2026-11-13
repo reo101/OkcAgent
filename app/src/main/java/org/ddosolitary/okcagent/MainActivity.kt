@@ -1,11 +1,14 @@
 package org.ddosolitary.okcagent
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.view.*
 import android.widget.Button
@@ -13,11 +16,9 @@ import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import androidx.preference.PreferenceManager
 import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import org.ddosolitary.okcagent.gpg.GpgApi
 import org.ddosolitary.okcagent.ssh.SshApi
 import org.ddosolitary.okcagent.ssh.SshKeyInfo
@@ -38,6 +39,7 @@ class MainActivity : AppCompatActivity() {
 	companion object {
 		private const val REQUEST_SELECT_SSH_KEY = 1
 		private const val REQUEST_SELECT_GPG_KEY = 2
+		private const val REQUEST_NOTIFICATIONS = 3
 	}
 
 	private class SshKeyViewHolder(val view: View) : RecyclerView.ViewHolder(view)
@@ -159,6 +161,12 @@ class MainActivity : AppCompatActivity() {
 		setContentView(R.layout.activity_main)
 		setSupportActionBar(findViewById(R.id.toolbar))
 
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+			checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+		) {
+			requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
+		}
+
 		val touchHelper = ItemTouchHelper(object : ItemTouchHelper.Callback() {
 			override fun isItemViewSwipeEnabled(): Boolean = false
 			override fun isLongPressDragEnabled(): Boolean = false
@@ -195,37 +203,6 @@ class MainActivity : AppCompatActivity() {
 			textGpg.text = getString(R.string.text_has_gpg_key).format(gpgKeyId)
 		}
 
-		val settingsPref = PreferenceManager.getDefaultSharedPreferences(this)
-		if (!settingsPref.contains(getString(R.string.key_error_reporting))) {
-			MaterialAlertDialogBuilder(this)
-				.setTitle(R.string.text_error_reporting)
-				.setMessage(R.string.text_error_reporting_message)
-				.setPositiveButton(R.string.button_yes) { _, _ ->
-					settingsPref.edit().run {
-						putBoolean(getString(R.string.key_error_reporting), true)
-						apply()
-					}
-				}
-				.setNegativeButton(R.string.button_no) { _, _ ->
-					settingsPref.edit().run {
-						putBoolean(getString(R.string.key_error_reporting), false)
-						apply()
-					}
-				}
-				.show()
-		}
-	}
-
-	override fun onCreateOptionsMenu(menu: Menu?): Boolean {
-		menuInflater.inflate(R.menu.menu_main, menu)
-		return true
-	}
-
-	override fun onOptionsItemSelected(item: MenuItem): Boolean {
-		when (item.itemId) {
-			R.id.item_settings -> startActivity(Intent(this, SettingsActivity::class.java))
-		}
-		return true
 	}
 
 	override fun onResume() {

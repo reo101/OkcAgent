@@ -36,7 +36,7 @@ class GpgApi(
 
 	override fun close() {
 		conn?.let {
-			if (it.isBound) it.unbindFromService()
+			try { it.unbindFromService() } catch (_: IllegalArgumentException) { }
 		}
 	}
 }

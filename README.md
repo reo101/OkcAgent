@@ -1,76 +1,72 @@
 # OkcAgent
 
-![Build status](https://github.com/DDoSolitary/OkcAgent/workflows/.github/workflows/build.yml/badge.svg)
+This companion app connects [okc-agents](https://github.com/reo101/okc-agents) to OpenKeychain. SSH and OpenPGP private-key operations remain in OpenKeychain.
 
-A utility that makes OpenKeychain available in your Termux shell.
+Companion 0.3.0 pairs with CLI 0.4.0 through GPG protocol 2. Older GPG clients are rejected rather than silently ignoring their options. SSH retains protocol 0.
 
-## Features
+This fork adds explicit public export, OpenKeychain backup, permission checks, metadata, signing-key selectors, cancellation, and binary-stream repairs. It removes Bugsnag and its native libraries. It does not expose a GnuPG agent socket.
 
-This tool acts as a bridge/proxy between Termux and OpenKeychain, enabling you to perform crypto operations in Termux using your keys stored in OpenKeychain, like:
+## Build
 
-- authenticate SSH connections
-- sign/verify/encrypt/decrypt messages
+The checkout contains the public API sources. No local submodule directories or unpublished Maven artifacts are required. Their revisions and licenses are listed in [libraries/README.md](libraries/README.md).
 
-This tool implements the existing protocols in this field so you can seamlessly integrate it with other command line utilities like `ssh` and `git`.
+With Nix, enter the pinned build environment:
 
-## Demonstration
-
-![](https://i.ibb.co/zG8Mq9Q/okc-ssh-agent.gif)
-![](https://i.ibb.co/X2PFCDm/okc-gpg.gif)
-
-## Install
-
-This project consists of two components: the OkcAgent app, and command line utilities to be used in the Termux shell. You need to install both of them to make it work.
-
-### The OkcAgent app
-
-- Stable releases
-  - [GitHub Releases](https://github.com/DDoSolitary/OkcAgent/releases)
-  - [F-Droid](https://f-droid.org/packages/org.ddosolitary.okcagent/)
-  - <del>[Google Play Store](https://play.google.com/store/apps/details?id=org.ddosolitary.okcagent)</del>  
-    The app has been removed from Play Store because Google requires a privacy policy and I don't know how to create one. Any help is welcome.
-- [Dev releases](https://ddosolitary-builds.sourceforge.io/OkcAgent/)
-
-### Command line utilities
-
-- Stable releases
-  - Termux package: `pkg install okc-agents`
-  - [GitHub Releases](https://github.com/DDoSolitary/okc-agents/releases)
-- [Dev releases](https://ddosolitary-builds.sourceforge.io/okc-agents/)
-
-## How to use
-
-1. Install OpenKeychain, Termux and the necessary components mentioned above.
-2. Open the app and configure the keys to be used for crypto operations.
-3. Use the command line utilities.
-    - `okc-ssh-agent` acts as an SSH agent. You can use `okc-ssh-agent` as `ssh-agent`, just `eval $(okc-ssh-agent)`, it will set `SSH_AUTH_SOCK` to that path to inform programs like `ssh` to connect to it.
-    - `okc-gpg` supports a limited set of GPG options so you can use it to perform some crypto operations. Read [GpgArguments.kt](https://github.com/DDoSolitary/OkcAgent/blob/master/app/src/main/java/org/ddosolitary/okcagent/gpg/GpgArguments.kt) for a complete list of supported options.
-
-### Starting okc-ssh-agent automatically
-
-Like the normal `ssh-agent`, `okc-ssh-agent` needs to be started first to allow SSH clients to connect to it, and it will be handy to have it started automatically. You can put some startup script in `~/.bashrc` or `~/.profile` to start the agent when you open a new shell.
-
-For v0.1.1 and earlier versions (of the command line tools, not the OkcAgent app), you need to spefify socket path as its first argument. Take a look at [this issue](https://github.com/DDoSolitary/okc-agents/issues/2) for details.
-
-Starting from v0.1.2, `okc-ssh-agent` supports most command line options of `ssh-agent`, so you can use the same script for `ssh-agent` to start `okc-ssh-agent`. For example, the following script will start `okc-ssh-agent` if there isn't one already running and then setup environment variables.
-
-```bash
-if ! pgrep okc-ssh-agent > /dev/null; then
-	okc-ssh-agent > "$PREFIX/tmp/okc-ssh-agent.env"
-fi
-source "$PREFIX/tmp/okc-ssh-agent.env"
+```sh
+nix develop
+./gradlew --no-daemon assembleDebug assembleRelease
+python3 tests/test-agent-runtime.py
 ```
 
-Or you can just add the following line to start it:
+Without Nix, use JDK 11, Android platform 33, and build tools 31.0.0. Set `ANDROID_SDK_ROOT` to that SDK. Gradle downloads its Maven dependencies on the first build. Release output is unsigned.
 
-```bash
-eval $(okc-ssh-agent)
-```
+The APK contains no native `.so` files. There are no Bugsnag libraries to trigger a 16 KB alignment warning. The app still targets SDK 30. A target-SDK modernization needs a separate foreground-service review.
 
-## Notes about the app
+## Setup
 
-This app is available in Play Store at the price of $1. I didn't intend to make profit from this project and simply consider it as a way of donation. If you don't want to pay, you can always download the dev releases for free using the links mentioned above, or even build the app from its source code. However, please note that the APK files from these two sources are signed with different keys, which means that you have to uninstall the existing app first if you want to switch between them.
+1. Install OpenKeychain and this companion APK.
+2. Open OkcAgent and allow notifications.
+3. Select the GPG signing key and SSH authentication subkeys.
+4. Install the matching CLI fork.
+5. If an authorization notification appears, open it and complete the OpenKeychain request.
 
-This app uses [Bugsnag](https://www.bugsnag.com/) for error reporting.
+If you replace an APK signed by another certificate, Android requires an uninstall first. That removes companion preferences. OpenKeychain authorizations also depend on the signing certificate. Select the keys again after replacement.
 
-[![](https://i.ibb.co/PQy8pkK/bugsnag.png)](https://www.bugsnag.com/)
+NNS can supervise the SSH client for a NoD consumer. Its module is `nix/nns-system/okc-agents.nix` in [NNS](https://github.com/reo101/NNS). Do not replace the system `gpg` command globally.
+
+## Supported commands
+
+| CLI action | Provider action |
+| --- | --- |
+| `--clear-sign`, `--clearsign` | Cleartext signature |
+| `--detach-sign`, `-b` | Detached signature |
+| `--encrypt`, `-e` | Encrypt |
+| `--sign --encrypt` | Sign and encrypt |
+| `--decrypt`, `--verify` | Decrypt and verify |
+| `--export` | Public OpenPGP key export |
+| `--export-ssh-key` | SSH public key export |
+| `--backup` | Encrypted OpenKeychain backup |
+| `--backup --backup-secret` | OpenKeychain backup with secret parts |
+| `--check-permission` | Provider authorization check |
+| `--decrypt --metadata` | Diagnostic metadata |
+| `--list-config` | Companion version and provider |
+
+Public export accepts full 16-digit key IDs and email addresses. With no selector, it exports the configured GPG key. `--armor` controls the export encoding. SSH export uses an authentication subkey ID, not a primary-key fingerprint.
+
+`--local-user` / `-u`, `--default-key`, and `--default-user` select a signing key. Repeated recipients and `--encrypt-to` are combined. Unsupported commands fail explicitly in both the CLI and companion.
+
+Key listings, colon records, fingerprints, GnuPG secret-key export, import, creation, deletion, editing, and keyserver operations are not implemented. Perform key management in OpenKeychain. `--list-secret-keys` never starts a backup. `--backup` is not a GnuPG secret-key export. OpenKeychain controls its authorization and recovery code.
+
+Signed-packet `--sign` without encryption, hidden recipients, batch mode, passphrase injection, and status descriptors other than 2 are rejected. Only a minimal signing-success status marker is available. Full GnuPG status compatibility is not claimed.
+
+## Cancellation and tests
+
+GPG client disconnection interrupts pending authorization. SSH uses a bounded input pipe to detect client disconnection during authorization. UI waits have a two-minute limit. Pending UI does not hold the provider lock. Notification cleanup runs on completion and cancellation.
+
+The host regression script compiles the actual request lifecycle, GPG service, argument parser, and streams against Android/provider stubs. It tests cancellation, independent requests, explicit command rejection, binary replay, truncation, export encoding, selector failures, mixed recipients, output staging, metadata, and asynchronous SSH binding. It does not test OpenKeychain cryptography, Android SELinux, or hardware-token interaction.
+
+The repaired APK requires a separate interactive device test. Building it is not evidence that a token signature completed. Do not automate permission approval or key administration on a personal device.
+
+## License
+
+The application retains its MIT license. The included OpenKeychain API libraries retain their Apache-2.0 licenses. These are client API libraries, not OpenKeychain application code.
